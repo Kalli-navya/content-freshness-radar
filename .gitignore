@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Local generated artifacts (regenerate with docs/make_docx.py)
+docs/Content_Freshness_Radar.docx
