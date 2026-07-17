@@ -113,3 +113,22 @@ body {
 
 .cfr-foot { margin-top: 28px; color: var(--cfr-subtle); font-size: 12px; text-align: center; }
 .cfr-actions { display: flex; gap: 6px; align-items: center; }
+
+/* Headline: the actionable "needs update" number */
+.cfr-headline {
+  display: flex; align-items: center; gap: 16px;
+  background: #fff; border: 1px solid var(--cfr-border); border-left: 5px solid var(--cfr-red);
+  border-radius: 2px; padding: 14px 18px; margin: 18px 0 22px;
+}
+.cfr-headline .big { font-size: 40px; font-weight: 800; line-height: 1; color: var(--cfr-red); }
+.cfr-headline-t { font-size: 15px; font-weight: 600; }
+
+.cfr-lenslabel { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--cfr-subtle); margin-bottom: 6px; }
+
+/* Evidence reasons (the only thing that justifies an update CTA) */
+.cfr-evidence {
+  display: flex; align-items: center; gap: 5px;
+  color: var(--cfr-red); font-size: 13px; font-weight: 600; margin-bottom: 3px;
+}
+.cfr-row-flag td { background: #fffaf9; }
+.cfr-row-flag:hover td { background: #fff4f2; }

@@ -6,7 +6,16 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-USER_AGENT = "ContentFreshnessRadar/0.2 (https://example.org; poc@example.org)"
+# Wikimedia's User-Agent policy (https://meta.wikimedia.org/wiki/User-Agent_policy)
+# requires a descriptive UA that identifies the tool and a way to contact the
+# operator; a generic UA will get rate-limited or blocked. For sustained/high-
+# volume use, register a bot account and/or request higher API limits.
+# TODO: replace the contact with the operator's real wiki username / email.
+USER_AGENT = (
+    "ContentFreshnessRadar/0.3 "
+    "(https://github.com/Kalli-navya/content-freshness-radar; "
+    "User:Kalli-navya) python-urllib"
+)
 
 
 def _get(url):

@@ -1,19 +1,17 @@
 import { createApp, ref, computed, onMounted } from "vue";
 import {
   CdxButton, CdxIcon, CdxInfoChip, CdxSelect, CdxSearchInput,
-  CdxTabs, CdxTab, CdxThumbnail, CdxMessage, CdxProgressIndicator,
+  CdxTabs, CdxTab, CdxMessage, CdxProgressIndicator, CdxToggleSwitch,
 } from "@wikimedia/codex";
 import {
   cdxIconHistory, cdxIconEdit, cdxIconLinkExternal, cdxIconRobot,
-  cdxIconImage, cdxIconArticles, cdxIconInfoFilled, cdxIconChart,
+  cdxIconImage, cdxIconInfoFilled, cdxIconChart, cdxIconAlert,
 } from "@wikimedia/codex-icons";
-
-const BAND_ORDER = { RED: 0, ORANGE: 1, YELLOW: 2, GREEN: 3 };
 
 const App = {
   components: {
     CdxButton, CdxIcon, CdxInfoChip, CdxSelect, CdxSearchInput,
-    CdxTabs, CdxTab, CdxThumbnail, CdxMessage, CdxProgressIndicator,
+    CdxTabs, CdxTab, CdxMessage, CdxProgressIndicator, CdxToggleSwitch,
   },
   setup() {
     const data = ref(null);
@@ -23,6 +21,7 @@ const App = {
     const bandFilter = ref("all");
     const sortKey = ref("priority");
     const activeTab = ref("articles");
+    const needsReviewOnly = ref(false);
 
     onMounted(async () => {
       try {
@@ -31,21 +30,21 @@ const App = {
         data.value = await res.json();
       } catch (e) {
         error.value = "Could not load data.json. Run the pipeline first: " +
-          "python3 run_pipeline.py --category \"...\" --images";
+          "python3 run_pipeline.py --category \"...\"";
       } finally {
         loading.value = false;
       }
     });
 
     const bandFilterItems = [
-      { value: "all", label: "All freshness bands" },
-      { value: "RED", label: "Red - outdated (>3y)" },
-      { value: "ORANGE", label: "Orange - stale (18-36m)" },
-      { value: "YELLOW", label: "Yellow - aging (6-18m)" },
-      { value: "GREEN", label: "Green - fresh (<6m)" },
+      { value: "all", label: "Any age" },
+      { value: "RED", label: "Updated > 3 years ago" },
+      { value: "ORANGE", label: "Updated 18-36 months ago" },
+      { value: "YELLOW", label: "Updated 6-18 months ago" },
+      { value: "GREEN", label: "Updated < 6 months ago" },
     ];
     const sortItems = [
-      { value: "priority", label: "Priority (needs attention)" },
+      { value: "priority", label: "Priority (evidence + traffic + age)" },
       { value: "age", label: "Oldest first" },
       { value: "views", label: "Most viewed" },
       { value: "title", label: "Title (A-Z)" },
@@ -54,6 +53,7 @@ const App = {
     const articles = computed(() => {
       if (!data.value) return [];
       let list = data.value.articles.slice();
+      if (needsReviewOnly.value) list = list.filter((a) => a.recommend_update);
       if (bandFilter.value !== "all") {
         list = list.filter((a) => a.band === bandFilter.value);
       }
@@ -69,6 +69,8 @@ const App = {
     });
 
     const images = computed(() => (data.value ? data.value.images : []));
+    const needsUpdate = computed(() =>
+      data.value ? (data.value.needs_update_count || 0) : 0);
 
     const distSegments = computed(() => {
       if (!data.value) return [];
@@ -89,12 +91,12 @@ const App = {
 
     return {
       data, loading, error, query, bandFilter, sortKey, activeTab,
-      bandFilterItems, sortItems, articles, images, distSegments,
-      formatAge, open, BAND_ORDER,
+      needsReviewOnly, bandFilterItems, sortItems, articles, images,
+      needsUpdate, distSegments, formatAge, open,
       iconHistory: cdxIconHistory, iconEdit: cdxIconEdit,
       iconExternal: cdxIconLinkExternal, iconRobot: cdxIconRobot,
-      iconImage: cdxIconImage, iconArticles: cdxIconArticles,
-      iconInfo: cdxIconInfoFilled, iconChart: cdxIconChart,
+      iconImage: cdxIconImage, iconInfo: cdxIconInfoFilled,
+      iconChart: cdxIconChart, iconAlert: cdxIconAlert,
     };
   },
   template: `
@@ -106,7 +108,7 @@ const App = {
         Category <strong>{{ data.category }}</strong> on {{ data.wiki }}
         &middot; {{ data.article_count }} articles &middot; generated {{ data.generated_at }}
       </div>
-      <div class="sub" v-else>Making content obsolescence visible</div>
+      <div class="sub" v-else>Surfacing content that shows evidence of being outdated</div>
     </div>
   </div>
 
@@ -118,17 +120,29 @@ const App = {
 
     <template v-else>
       <cdx-message type="notice" :fade-in="true">
-        Articles are scored by their <strong>last substantive edit</strong> - minor,
-        bot and revert edits are ignored so a page that only gets automated touches
-        still surfaces as outdated. Sort by <em>priority</em> to find high-traffic
-        pages that haven't truly been updated in years.
+        <strong>Age is a lens, not a verdict.</strong> A page untouched for years
+        may simply be complete (history, mathematics). We only recommend an update
+        where there is concrete <em>evidence</em> - the article's own
+        \u201cas of YYYY\u201d data is old, or the community already tagged it.
+        Colour bands below just describe how long since the last real edit.
       </cdx-message>
 
-      <!-- Band summary -->
+      <!-- Headline: the actionable number -->
+      <div class="cfr-headline">
+        <div class="big">{{ needsUpdate }}</div>
+        <div>
+          <div class="cfr-headline-t">pages show evidence of outdated content</div>
+          <div class="cfr-muted">out of {{ data.article_count }} scanned &middot;
+            these are the ones actually worth a look</div>
+        </div>
+      </div>
+
+      <!-- Freshness (age) distribution - descriptive only -->
+      <div class="cfr-lenslabel">Last-edit age (descriptive lens)</div>
       <div class="cfr-bandgrid">
         <div v-for="k in ['GREEN','YELLOW','ORANGE','RED']" :key="k" class="cfr-bandcard" :class="k">
           <div class="n">{{ data.bands[k] || 0 }}</div>
-          <div class="l">{{ k }}</div>
+          <div class="l">{{ k === 'GREEN' ? '< 6 mo' : k === 'YELLOW' ? '6-18 mo' : k === 'ORANGE' ? '18-36 mo' : '> 3 yr' }}</div>
         </div>
       </div>
       <div class="cfr-distbar">
@@ -142,12 +156,15 @@ const App = {
           <cdx-search-input v-model="query" placeholder="Filter by title..." />
         </div>
         <div>
-          <label class="cfr-field-label">Freshness</label>
+          <label class="cfr-field-label">Last-edit age</label>
           <cdx-select v-model:selected="bandFilter" :menu-items="bandFilterItems" />
         </div>
         <div>
           <label class="cfr-field-label">Sort by</label>
           <cdx-select v-model:selected="sortKey" :menu-items="sortItems" />
+        </div>
+        <div style="padding-bottom:4px">
+          <cdx-toggle-switch v-model="needsReviewOnly">Only pages with update evidence</cdx-toggle-switch>
         </div>
       </div>
 
@@ -157,7 +174,7 @@ const App = {
             <thead>
               <tr>
                 <th>Article</th>
-                <th>Freshness</th>
+                <th>Evidence of outdated content</th>
                 <th>Last real edit</th>
                 <th>Age</th>
                 <th>Views (60d)</th>
@@ -166,7 +183,7 @@ const App = {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="a in articles" :key="a.pageid">
+              <tr v-for="a in articles" :key="a.pageid" :class="{ 'cfr-row-flag': a.recommend_update }">
                 <td>
                   <a class="cfr-title-link" :href="a.url" target="_blank" rel="noopener">
                     {{ a.title }} <cdx-icon :icon="iconExternal" size="x-small" />
@@ -176,36 +193,36 @@ const App = {
                     <cdx-icon :icon="iconRobot" size="x-small" />
                     {{ Math.round(a.skipped_recent_days) }} recent days were minor/bot/revert edits
                   </div>
+                </td>
+                <td>
+                  <template v-if="a.recommend_update">
+                    <div v-for="e in a.evidence" :key="e" class="cfr-evidence">
+                      <cdx-icon :icon="iconAlert" size="x-small" /> {{ e }}
+                    </div>
+                  </template>
+                  <div v-else class="cfr-muted">
+                    <span class="cfr-pill" :class="a.band" style="opacity:.85">{{ a.band }}</span>
+                    <div style="margin-top:3px">no staleness signals</div>
+                  </div>
                   <div v-if="a.volatility_factors && a.volatility_factors.length" class="cfr-botnote">
                     <cdx-icon :icon="iconChart" size="x-small" />
                     {{ a.volatility_factors.join(' \u00b7 ') }}
                   </div>
                 </td>
-                <td>
-                  <span class="cfr-pill" :class="a.band">{{ a.band }}</span>
-                  <div v-if="a.dated_since" style="margin-top:4px">
-                    <cdx-info-chip status="error">data as of {{ a.dated_since }}</cdx-info-chip>
-                  </div>
-                  <div v-if="a.community_flagged" style="margin-top:4px">
-                    <cdx-info-chip status="warning">Community-flagged</cdx-info-chip>
-                  </div>
-                </td>
                 <td class="cfr-num">{{ a.last_substantive_edit }}</td>
                 <td class="cfr-num">{{ formatAge(a.days_since_substantive) }}</td>
                 <td class="cfr-num">{{ a.pageviews_60d.toLocaleString() }}</td>
-                <td class="cfr-num">
-                  <strong>{{ a.priority }}</strong>
-                  <div v-if="a.volatility > 1" class="cfr-muted">&times;{{ a.volatility }} volatility</div>
-                </td>
+                <td class="cfr-num"><strong>{{ a.priority }}</strong></td>
                 <td>
-                  <div class="cfr-actions">
-                    <cdx-button
-                      :action="a.band === 'RED' || a.band === 'ORANGE' ? 'progressive' : 'default'"
-                      :weight="a.band === 'RED' ? 'primary' : 'normal'"
-                      @click="open(a.edit_url)">
-                      <cdx-icon :icon="iconEdit" /> Update
-                    </cdx-button>
-                  </div>
+                  <cdx-button
+                    v-if="a.recommend_update"
+                    action="progressive" weight="primary"
+                    @click="open(a.edit_url)">
+                    <cdx-icon :icon="iconEdit" /> Review &amp; update
+                  </cdx-button>
+                  <cdx-button v-else weight="quiet" @click="open(a.url)">
+                    View
+                  </cdx-button>
                 </td>
               </tr>
               <tr v-if="articles.length === 0">
@@ -217,7 +234,15 @@ const App = {
           </table>
         </cdx-tab>
 
-        <cdx-tab name="images" label="Images & graphics">
+        <cdx-tab name="images" label="Images (experimental)">
+          <cdx-message type="warning" :allow-user-dismiss="false" style="margin-bottom:12px">
+            <strong>Experimental &amp; low-signal.</strong> Upload age barely
+            correlates with whether an image needs updating - the vast majority of
+            images, photos, screenshots and charts never do (a Windows 98
+            screenshot or a 1990s economic graph is correctly old). Reliably
+            telling which need a refresh needs a model that understands the image
+            and how it is used. Shown here only for exploration.
+          </cdx-message>
           <div v-if="images.length === 0" class="cfr-muted" style="padding:24px;text-align:center">
             No images scored. Re-run the pipeline with the <code>--images</code> flag.
           </div>
@@ -226,15 +251,6 @@ const App = {
               <div class="thumb" :style="{ backgroundImage: 'url(' + img.url + ')' }"></div>
               <div class="body">
                 <div class="fname">{{ img.file.replace('File:', '') }}</div>
-                <div>
-                  <span class="cfr-pill" :class="img.band">{{ img.band }}</span>
-                  <cdx-info-chip v-if="img.is_screenshot" status="notice" style="margin-left:4px">
-                    screenshot
-                  </cdx-info-chip>
-                  <cdx-info-chip v-else-if="img.kind === 'graphic'" status="notice" style="margin-left:4px">
-                    graphic
-                  </cdx-info-chip>
-                </div>
                 <div class="cfr-muted">
                   Last re-uploaded {{ img.last_reupload }} &middot; {{ formatAge(img.days_since_reupload) }} old
                 </div>

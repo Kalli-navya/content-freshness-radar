@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Content Freshness Radar - pipeline.
 
-Scores every article in a category (freshness + pageviews + priority) and the
-images they use, then writes webapp/data.json for the Codex dashboard.
+Scores the articles in a category for freshness (descriptive age) and, more
+importantly, for concrete *evidence* of outdated content, then writes
+webapp/data.json for the Codex dashboard.
+
+Focus is on TEXT content. Image scoring is opt-in and experimental (--images):
+upload age is a weak signal - most images/screenshots/charts never need a newer
+version (a Windows 98 screenshot or a 1990s economic graph is correctly old), so
+it is off by default and clearly flagged as exploratory.
 
 Usage:
-    python3 run_pipeline.py --category "Economy of Oceania" --limit 40
-    python3 run_pipeline.py --category "Windows 10" --limit 30 --images
+    python3 run_pipeline.py --category "Economy of India" --recursive --limit 40
+    python3 run_pipeline.py --category "Windows 10" --limit 30 --images  # experimental
 """
 
 import argparse
@@ -34,8 +40,13 @@ def edit_url(wiki, title):
     return article_url(wiki, title) + "?action=edit"
 
 
-def suggest_template(band):
-    return "{{Update}}" if band in ("ORANGE", "RED") else None
+def suggest_template(assessment):
+    """Only suggest {{Update}} when there is real evidence AND the community has
+    not already tagged it. Never suggest it from edit age alone - a stable old
+    article (history, maths) must not be told to update."""
+    if assessment["recommend_update"] and not assessment["community_flagged"]:
+        return "{{Update}}"
+    return None
 
 
 def process(wiki, category, limit, do_images, images_cap, recursive, depth):
@@ -59,9 +70,9 @@ def process(wiki, category, limit, do_images, images_cap, recursive, depth):
         score = fr.score_revisions(revs)
         views = mw.pageviews(wiki, title, days=60)
         cats = mw.page_categories(wiki, title)
-        flagged = fr.community_flagged(cats)
-        vol = fr.assess_volatility(cats)
-        prio = fr.priority(score["days_since_substantive"], views, vol["score"])
+        assess = fr.assess_categories(cats)
+        prio = fr.priority(score["days_since_substantive"], views,
+                           assess["volatility"], assess["recommend_update"])
 
         articles.append({
             "title": title,
@@ -70,11 +81,13 @@ def process(wiki, category, limit, do_images, images_cap, recursive, depth):
             "edit_url": edit_url(wiki, title),
             "pageviews_60d": views,
             "priority": prio,
-            "volatility": vol["score"],
-            "volatility_factors": vol["factors"],
-            "dated_since": vol["dated_since"],
-            "community_flagged": flagged,
-            "suggested_template": suggest_template(score["band"]),
+            "recommend_update": assess["recommend_update"],
+            "evidence": assess["evidence"],
+            "volatility": assess["volatility"],
+            "volatility_factors": assess["volatility_factors"],
+            "dated_since": assess["dated_since"],
+            "community_flagged": assess["community_flagged"],
+            "suggested_template": suggest_template(assess),
             **score,
         })
 
@@ -101,15 +114,18 @@ def process(wiki, category, limit, do_images, images_cap, recursive, depth):
     bands = {"GREEN": 0, "YELLOW": 0, "ORANGE": 0, "RED": 0}
     for a in articles:
         bands[a["band"]] = bands.get(a["band"], 0) + 1
+    needs_update = sum(1 for a in articles if a["recommend_update"])
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "wiki": wiki,
         "category": category,
         "article_count": len(articles),
+        "needs_update_count": needs_update,
         "bands": bands,
         "articles": articles,
         "images": images,
+        "images_experimental": True,
     }
 
 
@@ -133,22 +149,24 @@ def main():
         json.dump(data, fh, indent=2, ensure_ascii=False)
 
     b = data["bands"]
-    print("\n" + "=" * 56)
+    print("\n" + "=" * 60)
     print(f"  Scored {data['article_count']} articles from '{args.category}'")
-    print(f"  GREEN {b['GREEN']}  YELLOW {b['YELLOW']}  "
+    print(f"  Freshness (age only): GREEN {b['GREEN']}  YELLOW {b['YELLOW']}  "
           f"ORANGE {b['ORANGE']}  RED {b['RED']}")
+    print(f"  >>> {data['needs_update_count']} show EVIDENCE of outdated content "
+          f"(the actionable set)")
     if data["images"]:
-        print(f"  Images scored: {len(data['images'])}")
+        print(f"  Images scored (experimental): {len(data['images'])}")
     print(f"  Wrote {args.out}")
-    print("=" * 56)
-    print("\n  Top 5 by priority (staleness x traffic x volatility):")
-    for a in data["articles"][:5]:
-        print(f"   [{a['band']:6}] {a['title'][:38]:38} "
-              f"edit={a['last_substantive_edit']} "
-              f"views={a['pageviews_60d']:<5} vol={a['volatility']} "
-              f"prio={a['priority']}")
-        if a["volatility_factors"]:
-            print(f"            -> {' | '.join(a['volatility_factors'])}")
+    print("=" * 60)
+    flagged = [a for a in data["articles"] if a["recommend_update"]]
+    print(f"\n  Pages with update evidence ({len(flagged)}):")
+    for a in flagged[:8]:
+        print(f"   {a['title'][:42]:42} last edit {a['last_substantive_edit']} "
+              f"views={a['pageviews_60d']:<5} prio={a['priority']}")
+        print(f"       evidence: {' | '.join(a['evidence'])}")
+    if not flagged:
+        print("   (none - no page in this set has concrete staleness evidence)")
     return 0
 
 

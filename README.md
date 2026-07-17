@@ -1,32 +1,54 @@
 # Content Freshness Radar
 
-Identify and flag outdated Wikipedia articles, obsolete screenshots, and stale
-graphics — and give the community a one-click path to update them.
+Surface Wikipedia articles that show **evidence** of being outdated — and give
+editors a one-click path to fix them.
 
 See [`PLAN.md`](PLAN.md) for the full design. This repo is a working end-to-end
-implementation: a Python pipeline that scores content freshness from the live
-MediaWiki API, and a dashboard built with the **[Codex](https://doc.wikimedia.org/codex/main/)**
+implementation: a zero-dependency Python pipeline over the live MediaWiki API,
+and a dashboard built with the **[Codex](https://doc.wikimedia.org/codex/main/)**
 Wikimedia design system so it looks and feels native to the wiki ecosystem.
 
 ![dashboard](webapp/screenshot.png)
 
+## Core principle: age is a lens, not a verdict
+
+"Not edited in a long time" is **not** the same as "outdated." A history or
+mathematics article can sit untouched for years because it is *complete* —
+flagging it (or slapping `{{Update}}` on it) would be wrong and would erode
+community trust. So the tool keeps two ideas strictly separate:
+
+- **Freshness (age)** — purely descriptive color-coding of how long since the
+  last real edit. A *lens* for browsing; never, on its own, a reason to update.
+- **Update evidence** — concrete, page-specific signals that the content really
+  has gone stale. **Only this** produces a "recommend update" and a suggested
+  `{{Update}}`. Two evidence sources today:
+  - the article's own `{{As of|YYYY}}` **dated statements** being old (e.g. a
+    figure still "as of 2012"), and
+  - the community having **already tagged** it (maintenance categories).
+
+A page edited yesterday can still be flagged (if it cites 2012 data); a stable
+page untouched for 8 years is left alone. Topic "volatility" (economies,
+elections…) is used only as a soft prior to *rank* candidates, never to assert
+that a page is outdated.
+
 ## What it does
 
-- **Freshness color-coding** — every article gets a GREEN / YELLOW / ORANGE / RED
-  band based on its *last substantive edit* (minor, bot and revert edits are
-  ignored, so a page that only gets automated touches still surfaces as stale).
-- **Outdated-article ranking** — a priority score combines staleness with
-  pageviews **and topic volatility**, so high-traffic, fast-decaying pages that
-  haven't truly been updated in years rise to the top.
-- **Volatility weighting** — content that goes stale fast (elections, economies,
-  demographics, software) and pages with `{{As of|YYYY}}` "dated statements" or
-  maintenance tags are boosted; stable topics (math, history) are not. The
-  dashboard shows *why* each page was flagged and, when present, the year its
-  data is marked "as of" (e.g. a statistic still "as of 2012").
-- **Outdated images/graphics** — images used on the pages are scored by how long
-  since they were last re-uploaded, and classified as screenshot / graphic.
-- **Contribution nudges** — every row has an "Update" button that deep-links to
-  the wiki editor; stale pages get a suggested `{{Update}}` template.
+- **Evidence-based flagging** — reports how many pages show real evidence of
+  outdated content, with the specific reason for each.
+- **Freshness color-coding** — GREEN / YELLOW / ORANGE / RED bands from the
+  *last substantive edit* (minor, bot and revert edits are ignored), shown as a
+  descriptive lens.
+- **Priority ranking** — orders candidates by evidence + pageviews + staleness +
+  a topic-volatility prior.
+- **Contribution nudges** — flagged rows get a "Review & update" button that
+  deep-links to the editor; a `{{Update}}` is suggested only when there is
+  evidence *and* the community hasn't already tagged it.
+- **Images (experimental, off by default)** — image scoring by upload age exists
+  behind `--images`, but it is deliberately secondary: upload age barely
+  correlates with needing an update — most images, photos, screenshots and
+  charts never need a newer version (a Windows 98 screenshot or a 1990s economic
+  graph is *correctly* old). Reliably judging an image needs a model that
+  understands its content and use, so this is exploratory only.
 
 ## Requirements
 
@@ -38,14 +60,14 @@ Wikimedia design system so it looks and feels native to the wiki ecosystem.
 
 ```bash
 # Score a category and everything in its subcategories (a whole topic tree)
-python3 run_pipeline.py --category "Economy of Asia" --recursive --depth 2 --limit 30 --images
+python3 run_pipeline.py --category "Demographics of Asia" --recursive --depth 2 --limit 30
 
 # Score just the pages directly in one category
-python3 run_pipeline.py --category "Economy of Oceania" --limit 25 --images
+python3 run_pipeline.py --category "Economy of Oceania" --limit 25
 
 # Other examples
 python3 run_pipeline.py --category "Elections in India" --recursive --limit 50
-python3 run_pipeline.py --category "Windows 10" --limit 30 --images
+python3 run_pipeline.py --category "Windows 10" --limit 30 --images   # --images is experimental
 ```
 
 This writes `webapp/data.json`. Flags:
@@ -57,7 +79,7 @@ This writes `webapp/data.json`. Flags:
 | `--limit` | `40` | Max articles to score |
 | `--recursive` | off | Also walk subcategories (turns one category into a topic tree) |
 | `--depth` | `2` | Subcategory depth when `--recursive` is set |
-| `--images` | off | Also score images used on the pages |
+| `--images` | off | **Experimental.** Also score images by upload age (low-signal) |
 | `--images-cap` | `60` | Max images to score |
 
 ## 2. View the dashboard
@@ -71,7 +93,8 @@ python3 -m http.server 8777
 ## 3. Score a single item (quick POC)
 
 ```bash
-python3 poc.py --article "Demographics of Niue"
+python3 poc.py --article "Economy of India"    # flagged: cites "as of 2012" data
+python3 poc.py --article "Battle of Waterloo"   # not flagged: no staleness evidence
 python3 poc.py --image "File:Tux.svg" --wiki commons.wikimedia.org
 ```
 
@@ -96,9 +119,17 @@ content-freshness-radar/
 
 ## Notes & limits
 
-- Read-only: the tool never edits the wiki; it only routes editors to the editor.
-- Bot detection in the POC is heuristic (username ends in "bot") plus revert
-  tags; the replica-DB approach in `PLAN.md` §11 is more precise for scale.
-- Volatility is inferred from categories (topic + hidden `{{As of}}` / maintenance
-  categories). For full-wiki scale, do a cheap replica-DB staleness triage first,
-  then enrich only the candidates via the API (see `PLAN.md` §11).
+- **Read-only:** the tool never edits the wiki; it only routes editors to the editor.
+- **User-Agent / rate limits:** the client sends a descriptive User-Agent per
+  Wikimedia's [policy](https://meta.wikimedia.org/wiki/User-Agent_policy). Update
+  the contact in `cfr/mediawiki.py` to your real wiki username/email. For
+  sustained or high-volume use, register a bot account and/or request higher API
+  limits — a generic UA will get throttled or blocked.
+- **Bot detection** in the freshness scorer is heuristic (username ends in "bot")
+  plus revert tags; the replica-DB approach in `PLAN.md` §11 is more precise.
+- **Evidence** is inferred from categories (hidden `{{As of}}` + maintenance
+  categories). The strongest future signal is a **Wikidata ground-truth check**
+  (compare a stated figure to Wikidata's current value). For full-wiki scale, do
+  a cheap replica-DB triage first, then enrich only candidates via the API.
+- **Images** are intentionally out of the core (see above) — kept behind
+  `--images` as an experiment.

@@ -1,18 +1,32 @@
-"""Freshness scoring: 'substantive edit' detection + color banding.
+"""Freshness scoring + evidence-based obsolescence assessment.
 
-Implements PLAN.md sections 4.A and 11.3.
+Design principle (important): "not edited in a long time" is NOT the same as
+"outdated". A history or mathematics article can be untouched for years because
+it is complete. So we keep two ideas strictly separate:
+
+  * FRESHNESS (band)   - purely descriptive: how long since a real content edit.
+                         Used only as a visual lens / color-coding. Never, on its
+                         own, a reason to tell anyone to update a page.
+  * UPDATE EVIDENCE    - concrete, page-specific signals that the content really
+                         has gone stale: the article's own {{As of|YYYY}} dated
+                         statements being old, or the community having already
+                         tagged it. Only this justifies recommending an update.
+
+Topic "volatility" is used only as a soft prior for *ranking* candidates, never
+to assert a page is outdated.
 """
 
 import math
 import re
 from datetime import datetime, timezone
 
-# (max_days_inclusive, band, human description). See PLAN.md 4.A
+# (max_days_inclusive, band, NEUTRAL age description). Deliberately not judgmental
+# ("outdated") - it only states when the page was last substantively edited.
 BANDS = [
-    (182, "GREEN", "Fresh (< 6 months)"),
-    (548, "YELLOW", "Aging (6-18 months)"),
-    (1095, "ORANGE", "Stale (18-36 months)"),
-    (float("inf"), "RED", "Outdated (> 36 months)"),
+    (182, "GREEN", "Updated < 6 months ago"),
+    (548, "YELLOW", "Updated 6-18 months ago"),
+    (1095, "ORANGE", "Updated 18-36 months ago"),
+    (float("inf"), "RED", "Updated > 3 years ago"),
 ]
 
 REVERT_TAGS = {"mw-reverted", "mw-manual-revert", "mw-rollback", "mw-undo"}
@@ -20,12 +34,15 @@ COSMETIC_HINTS = ("typo", "fmt", "whitespace", "spelling", "punctuation",
                   "grammar", "link fix", "cleanup", "copyedit", " ce ")
 MIN_BYTE_DELTA = 60
 
-# Category name fragments indicating the community already flagged staleness.
-FLAG_HINTS = ("in need of updating", "potentially dated statements",
-              "articles to be expanded", "outdated")
+# Categories where the community has *explicitly* asked for an update. This is
+# real evidence (a human judged the content stale), unlike raw edit age.
+COMMUNITY_UPDATE_HINTS = ("in need of updating", "outdated")
 
-# Topic hints: content that goes stale fast and where staleness is misleading.
-# Mirrors the problem statement's examples (statistics, org charts, maps...).
+# A dated statement is only treated as evidence once it is this many years old.
+DATED_EVIDENCE_MIN_YEARS = 3
+
+# Topic hints: content that TENDS to decay fast. Used only as a ranking prior to
+# order candidates - it never marks a page as outdated by itself.
 VOLATILE_TOPIC_HINTS = (
     "election", "referendum", "incumbent", "current members",
     "economy", "economic", "gdp", "trade", "budget",
@@ -100,67 +117,73 @@ def score_revisions(revs):
     }
 
 
-def community_flagged(categories):
-    low = [c.lower() for c in categories]
-    return any(any(h in c for h in FLAG_HINTS) for c in low)
+def assess_categories(categories):
+    """Turn a page's categories into evidence + a ranking prior.
 
-
-def assess_volatility(categories):
-    """Estimate how fast a page's content goes stale, from its categories.
-
-    Returns {score, factors, dated_since}. score is a multiplier >= 1.0 applied
-    to the priority: volatile, dated, or community-tagged content ranks higher,
-    so stable topics (math, history) don't drown out genuinely misleading pages.
+    Returns:
+      recommend_update  bool  - True ONLY when there is concrete, page-specific
+                                evidence of staleness (old dated statements or a
+                                community update tag). This is what gates any
+                                "please update" call to action.
+      evidence          list  - human-readable reasons behind recommend_update.
+      dated_since       int   - oldest {{As of|YYYY}} year, if any.
+      community_flagged bool  - the community already tagged it for updating.
+      volatility        float - soft ranking prior (>=1.0); NOT evidence.
+      volatility_factors list - why the topic tends to decay (ranking only).
     """
     low = [c.lower() for c in categories]
-    factors = []
-    score = 1.0
+    now_year = datetime.now(timezone.utc).year
 
-    # {{As of|YYYY}} statements auto-add "...potentially dated statements from YYYY"
+    # {{As of|YYYY}} auto-adds "...potentially dated statements from YYYY".
     dated_years = []
     for c in low:
         m = re.search(r"potentially dated statements from (\d{4})", c)
         if m:
             dated_years.append(int(m.group(1)))
-    has_dated = any("potentially dated statements" in c for c in low)
     dated_since = min(dated_years) if dated_years else None
 
+    community_flagged = any(h in c for c in low for h in COMMUNITY_UPDATE_HINTS)
+
+    # ---- Evidence (justifies recommending an update) ----
+    evidence = []
+    if dated_since is not None and (now_year - dated_since) >= DATED_EVIDENCE_MIN_YEARS:
+        evidence.append(
+            "cites \u201cas of %d\u201d data (%d years old)"
+            % (dated_since, now_year - dated_since)
+        )
+    if community_flagged:
+        evidence.append("community-tagged as needing an update")
+    recommend_update = len(evidence) > 0
+
+    # ---- Volatility (ranking prior only) ----
     topics = sorted({h for c in low for h in VOLATILE_TOPIC_HINTS if h in c})
+    volatility = 1.0
+    volatility_factors = []
     if topics:
-        score += 0.5
-        factors.append("volatile topic (" + ", ".join(topics[:3]) + ")")
-
-    if has_dated:
-        score += 0.7
-        factors.append("contains dated \u201cas of\u201d statements")
-
+        volatility += 0.5
+        volatility_factors.append("fast-changing topic (" + ", ".join(topics[:3]) + ")")
     if dated_since is not None:
-        stale_years = datetime.now(timezone.utc).year - dated_since
-        if stale_years >= 3:
-            score += min(1.0, (stale_years - 2) * 0.25)
-        factors.append("data marked as of %d" % dated_since)
-
-    needs_update = any(
-        ("in need of updating" in c or "to be expanded" in c or "outdated" in c)
-        for c in low
-    )
-    if needs_update:
-        score += 0.5
-        factors.append("community-tagged for updating")
+        volatility += 0.3
+        volatility_factors.append("uses time-bound (\u201cas of\u201d) statements")
 
     return {
-        "score": round(min(score, 3.0), 2),
-        "factors": factors,
+        "recommend_update": recommend_update,
+        "evidence": evidence,
         "dated_since": dated_since,
+        "community_flagged": community_flagged,
+        "volatility": round(volatility, 2),
+        "volatility_factors": volatility_factors,
     }
 
 
-def priority(days_since_substantive, pageviews, volatility=1.0):
-    """Higher = more urgent. Old + high-traffic + volatile ranks top.
+def priority(days_since_substantive, pageviews, volatility=1.0, has_evidence=False):
+    """Ranking score for the *candidate* worklist (not a verdict on any page).
 
-    Uses log-scaled views so a few mega-popular pages don't dominate entirely,
-    and years-of-staleness so age scales sensibly.
+    Combines staleness, traffic (log-scaled so mega-popular pages don't dominate)
+    and the topic-volatility prior. Pages with concrete evidence are boosted so
+    they surface above merely-old-but-stable pages.
     """
     age_factor = days_since_substantive / 365.0
     traffic_factor = math.log10(pageviews + 10)
-    return round(age_factor * traffic_factor * volatility, 2)
+    evidence_boost = 1.5 if has_evidence else 1.0
+    return round(age_factor * traffic_factor * volatility * evidence_boost, 2)
