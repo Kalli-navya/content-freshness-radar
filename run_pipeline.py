@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from cfr import mediawiki as mw
@@ -49,6 +50,42 @@ def suggest_template(assessment):
     return None
 
 
+def _score_one(wiki, m, do_images):
+    """Fetch and score a single article. Designed to run in a thread pool."""
+    title = m["title"]
+    page, revs = mw.revisions(wiki, title, limit=50)
+    if not revs:
+        return None, []
+    score = fr.score_revisions(revs)
+    views = mw.pageviews(wiki, title, days=60)
+    cats = mw.page_categories(wiki, title)
+    assess = fr.assess_categories(cats)
+    prio = fr.priority(score["days_since_substantive"], views,
+                       assess["volatility"], assess["recommend_update"])
+    article = {
+        "title": title,
+        "pageid": page.get("pageid"),
+        "url": article_url(wiki, title),
+        "edit_url": edit_url(wiki, title),
+        "pageviews_60d": views,
+        "priority": prio,
+        "recommend_update": assess["recommend_update"],
+        "evidence": assess["evidence"],
+        "volatility": assess["volatility"],
+        "volatility_factors": assess["volatility_factors"],
+        "dated_since": assess["dated_since"],
+        "community_flagged": assess["community_flagged"],
+        "suggested_template": suggest_template(assess),
+        **score,
+    }
+    img_files = []
+    if do_images:
+        for f in mw.page_images(wiki, title, limit=30):
+            if not any(b in f.lower() for b in IMG_BLOCKLIST):
+                img_files.append(f)
+    return article, img_files
+
+
 def process(wiki, category, limit, do_images, images_cap, recursive, depth):
     if recursive:
         print(f"[1/3] Walking Category:{category} + subcategories (depth {depth}) on {wiki} ...")
@@ -60,42 +97,21 @@ def process(wiki, category, limit, do_images, images_cap, recursive, depth):
 
     articles = []
     image_titles = {}  # file_title -> set(article titles that use it)
+    total = len(members)
+    done = 0
 
-    for idx, m in enumerate(members, 1):
-        title = m["title"]
-        print(f"[2/3] ({idx}/{len(members)}) scoring: {title}")
-        page, revs = mw.revisions(wiki, title, limit=200)
-        if not revs:
-            continue
-        score = fr.score_revisions(revs)
-        views = mw.pageviews(wiki, title, days=60)
-        cats = mw.page_categories(wiki, title)
-        assess = fr.assess_categories(cats)
-        prio = fr.priority(score["days_since_substantive"], views,
-                           assess["volatility"], assess["recommend_update"])
-
-        articles.append({
-            "title": title,
-            "pageid": page.get("pageid"),
-            "url": article_url(wiki, title),
-            "edit_url": edit_url(wiki, title),
-            "pageviews_60d": views,
-            "priority": prio,
-            "recommend_update": assess["recommend_update"],
-            "evidence": assess["evidence"],
-            "volatility": assess["volatility"],
-            "volatility_factors": assess["volatility_factors"],
-            "dated_since": assess["dated_since"],
-            "community_flagged": assess["community_flagged"],
-            "suggested_template": suggest_template(assess),
-            **score,
-        })
-
-        if do_images:
-            for f in mw.page_images(wiki, title, limit=30):
-                if any(b in f.lower() for b in IMG_BLOCKLIST):
-                    continue
-                image_titles.setdefault(f, set()).add(title)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_score_one, wiki, m, do_images): m for m in members}
+        for future in as_completed(futures):
+            done += 1
+            article, img_files = future.result()
+            if article:
+                print(f"[2/3] ({done}/{total}) scored: {article['title']}")
+                articles.append(article)
+                for f in img_files:
+                    image_titles.setdefault(f, set()).add(article["title"])
+            else:
+                print(f"[2/3] ({done}/{total}) skipped (no revisions)")
 
     images = []
     if do_images and image_titles:

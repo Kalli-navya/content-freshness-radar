@@ -19,22 +19,56 @@ const App = {
     const error = ref(null);
     const query = ref("");
     const bandFilter = ref("all");
-    const sortKey = ref("priority");
+    const sortKey = ref("urgency");
     const activeTab = ref("articles");
     const needsReviewOnly = ref(false);
+
+    // Scan panel state
+    const scanCategory = ref("");
+    const scanLimit = ref(30);
+    const scanRecursive = ref(false);
+    const scanning = ref(false);
+    const scanError = ref(null);
 
     onMounted(async () => {
       try {
         const res = await fetch("./data.json");
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        data.value = await res.json();
+        if (res.ok) {
+          data.value = await res.json();
+          if (!scanCategory.value && data.value.category) {
+            scanCategory.value = data.value.category;
+          }
+        }
       } catch (e) {
-        error.value = "Could not load data.json. Run the pipeline first: " +
-          "python3 run_pipeline.py --category \"...\"";
+        // no data.json yet — scan panel prompts the user
       } finally {
         loading.value = false;
       }
     });
+
+    async function scan() {
+      const cat = scanCategory.value.trim();
+      if (!cat || scanning.value) return;
+      scanning.value = true;
+      scanError.value = null;
+      error.value = null;
+      data.value = null;
+      try {
+        const params = new URLSearchParams({
+          category: cat,
+          limit: String(scanLimit.value),
+          recursive: String(scanRecursive.value),
+        });
+        const res = await fetch("/api/scan?" + params);
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Scan failed");
+        data.value = json;
+      } catch (e) {
+        scanError.value = e.message;
+      } finally {
+        scanning.value = false;
+      }
+    }
 
     const bandFilterItems = [
       { value: "all", label: "Any age" },
@@ -43,7 +77,9 @@ const App = {
       { value: "YELLOW", label: "Updated 6-18 months ago" },
       { value: "GREEN", label: "Updated < 6 months ago" },
     ];
+    const BAND_ORDER = { RED: 0, ORANGE: 1, YELLOW: 2, GREEN: 3 };
     const sortItems = [
+      { value: "urgency", label: "Urgency (needs update first, then oldest)" },
       { value: "priority", label: "Priority (evidence + traffic + age)" },
       { value: "age", label: "Oldest first" },
       { value: "views", label: "Most viewed" },
@@ -60,6 +96,7 @@ const App = {
       const q = query.value.trim().toLowerCase();
       if (q) list = list.filter((a) => a.title.toLowerCase().includes(q));
       const cmp = {
+        urgency: (a, b) => (b.recommend_update - a.recommend_update) || BAND_ORDER[a.band] - BAND_ORDER[b.band] || b.priority - a.priority,
         priority: (a, b) => b.priority - a.priority,
         age: (a, b) => b.days_since_substantive - a.days_since_substantive,
         views: (a, b) => b.pageviews_60d - a.pageviews_60d,
@@ -93,6 +130,7 @@ const App = {
       data, loading, error, query, bandFilter, sortKey, activeTab,
       needsReviewOnly, bandFilterItems, sortItems, articles, images,
       needsUpdate, distSegments, formatAge, open,
+      scanCategory, scanLimit, scanRecursive, scanning, scanError, scan,
       iconHistory: cdxIconHistory, iconEdit: cdxIconEdit,
       iconExternal: cdxIconLinkExternal, iconRobot: cdxIconRobot,
       iconImage: cdxIconImage, iconInfo: cdxIconInfoFilled,
@@ -113,17 +151,77 @@ const App = {
   </div>
 
   <div class="cfr-wrap">
-    <cdx-progress-indicator v-if="loading">Loading data...</cdx-progress-indicator>
-    <cdx-message v-else-if="error" type="error" :allow-user-dismiss="false">
-      {{ error }}
-    </cdx-message>
+
+    <!-- Scan panel -->
+    <div class="cfr-scan-panel">
+      <div class="cfr-scan-row">
+        <div class="cfr-scan-field grow">
+          <label class="cfr-field-label">Wikipedia category</label>
+          <input
+            class="cfr-input"
+            v-model="scanCategory"
+            placeholder='e.g. Demographics of Asia'
+            :disabled="scanning"
+            @keydown.enter="scan"
+          />
+        </div>
+        <div class="cfr-scan-field">
+          <label class="cfr-field-label">Limit</label>
+          <input
+            class="cfr-input cfr-input-sm"
+            type="number"
+            v-model.number="scanLimit"
+            min="5"
+            max="100"
+            :disabled="scanning"
+          />
+        </div>
+        <div class="cfr-scan-field" style="align-self:flex-end;padding-bottom:6px">
+          <cdx-toggle-switch v-model="scanRecursive">Subcategories</cdx-toggle-switch>
+        </div>
+        <div class="cfr-scan-field" style="align-self:flex-end">
+          <cdx-button
+            action="progressive"
+            weight="primary"
+            :disabled="scanning || !scanCategory.trim()"
+            @click="scan"
+          >
+            {{ scanning ? 'Scanning…' : 'Scan' }}
+          </cdx-button>
+        </div>
+      </div>
+      <cdx-message
+        v-if="scanError"
+        type="error"
+        :allow-user-dismiss="true"
+        @user-dismissed="scanError = null"
+        style="margin-top:10px"
+      >
+        {{ scanError }}
+      </cdx-message>
+    </div>
+
+    <!-- Scanning in progress -->
+    <div v-if="scanning" class="cfr-scanning-state">
+      <cdx-progress-indicator>
+        Scanning Category:{{ scanCategory }}… this may take a minute.
+      </cdx-progress-indicator>
+    </div>
+
+    <!-- Initial data.json load -->
+    <cdx-progress-indicator v-else-if="loading">Loading data...</cdx-progress-indicator>
+
+    <!-- No data yet (first visit, no data.json) -->
+    <div v-else-if="!data" class="cfr-empty-state">
+      Enter a Wikipedia category above and click <strong>Scan</strong> to get started.
+    </div>
 
     <template v-else>
       <cdx-message type="notice" :fade-in="true">
         <strong>Age is a lens, not a verdict.</strong> A page untouched for years
         may simply be complete (history, mathematics). We only recommend an update
         where there is concrete <em>evidence</em> - the article's own
-        \u201cas of YYYY\u201d data is old, or the community already tagged it.
+        “as of YYYY” data is old, or the community already tagged it.
         Colour bands below just describe how long since the last real edit.
       </cdx-message>
 
@@ -161,7 +259,9 @@ const App = {
         </div>
         <div>
           <label class="cfr-field-label">Sort by</label>
-          <cdx-select v-model:selected="sortKey" :menu-items="sortItems" />
+          <select class="cfr-input" v-model="sortKey">
+            <option v-for="s in sortItems" :key="s.value" :value="s.value">{{ s.label }}</option>
+          </select>
         </div>
         <div style="padding-bottom:4px">
           <cdx-toggle-switch v-model="needsReviewOnly">Only pages with update evidence</cdx-toggle-switch>
@@ -176,7 +276,7 @@ const App = {
                 <th>Article</th>
                 <th>Evidence of outdated content</th>
                 <th>Last real edit</th>
-                <th>Age</th>
+                <th>Age since last edit</th>
                 <th>Views (60d)</th>
                 <th>Priority</th>
                 <th></th>
@@ -201,12 +301,12 @@ const App = {
                     </div>
                   </template>
                   <div v-else class="cfr-muted">
-                    <span class="cfr-pill" :class="a.band" style="opacity:.85">{{ a.band }}</span>
+                    <span class="cfr-pill" :class="a.band" style="opacity:.85">{{ a.band_desc }}</span>
                     <div style="margin-top:3px">no staleness signals</div>
                   </div>
                   <div v-if="a.volatility_factors && a.volatility_factors.length" class="cfr-botnote">
                     <cdx-icon :icon="iconChart" size="x-small" />
-                    {{ a.volatility_factors.join(' \u00b7 ') }}
+                    {{ a.volatility_factors.join(' · ') }}
                   </div>
                 </td>
                 <td class="cfr-num">{{ a.last_substantive_edit }}</td>

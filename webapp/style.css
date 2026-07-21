@@ -114,6 +114,49 @@ body {
 .cfr-foot { margin-top: 28px; color: var(--cfr-subtle); font-size: 12px; text-align: center; }
 .cfr-actions { display: flex; gap: 6px; align-items: center; }
 
+/* ---- Scan panel ---- */
+.cfr-scan-panel {
+  background: #fff;
+  border: 1px solid var(--cfr-border);
+  border-radius: 2px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+.cfr-scan-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.cfr-scan-field { display: flex; flex-direction: column; }
+.cfr-scan-field.grow { flex: 1 1 260px; }
+.cfr-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #a2a9b1;
+  border-radius: 2px;
+  font-size: 14px;
+  color: var(--cfr-ink);
+  background: #fff;
+  outline: none;
+  transition: border-color .1s;
+}
+.cfr-input:focus { border-color: #36c; box-shadow: 0 0 0 2px rgba(51,102,204,.2); }
+.cfr-input:disabled { background: #f8f9fa; color: var(--cfr-subtle); cursor: not-allowed; }
+.cfr-input-sm { width: 72px; }
+
+/* ---- Scanning / empty states ---- */
+.cfr-scanning-state {
+  padding: 48px 0;
+  text-align: center;
+}
+.cfr-empty-state {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--cfr-subtle);
+  font-size: 15px;
+}
+
 /* Headline: the actionable "needs update" number */
 .cfr-headline {
   display: flex; align-items: center; gap: 16px;
